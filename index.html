@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Check in</title>
+<meta name="robots" content="noindex">
+<style>
+  :root { --bg:#f6f6f3; --card:#fff; --ink:#16161a; --mute:#6b6b75; --line:#e4e4e0; --ok:#0f8a5f; --late:#b7791f; --bad:#c0392b; --accent:#2b59c3; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f0f13; --card:#1a1a20; --ink:#f1f1f4; --mute:#9a9aa6; --line:#2a2a33; --ok:#34c38f; --late:#e0a940; --bad:#ef6b5b; --accent:#7aa2ff; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  main { max-width:440px; margin:0 auto; padding:28px 16px 48px; }
+  .cls { font-size:13px; letter-spacing:.12em; text-transform:uppercase; color:var(--mute); margin-bottom:6px; }
+  h1 { font-size:26px; margin:0 0 14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; }
+  .big { text-align:center; padding:36px 18px; }
+  .tick { width:84px; height:84px; border-radius:50%; margin:0 auto 16px; display:grid; place-items:center; font-size:44px; color:#fff; background:var(--ok); animation:pop .35s ease; }
+  .tick.late { background:var(--late); }
+  .tick.bad { background:var(--bad); }
+  .tick.wait { background:var(--accent); font-size:34px; }
+  @keyframes pop { from { transform:scale(.6); opacity:0; } }
+  .muted { color:var(--mute); font-size:14px; }
+  .note { margin-top:14px; font-size:14px; color:var(--mute); }
+  input { width:100%; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--ink); font-size:16px; margin-bottom:10px; }
+  input.code { font-size:30px; letter-spacing:.35em; text-align:center; font-variant-numeric:tabular-nums; }
+  .names { display:grid; gap:8px; }
+  .names button, .btn { width:100%; padding:14px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:var(--ink); font-size:17px; text-align:left; cursor:pointer; }
+  .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; text-align:center; font-weight:600; }
+  .btn.ghost { text-align:center; margin-top:8px; border:none; background:none; color:var(--accent); font-size:15px; }
+  .err { color:var(--bad); font-size:14px; min-height:1.2em; margin-bottom:8px; }
+  .spin { width:32px; height:32px; border:3px solid var(--line); border-top-color:var(--accent); border-radius:50%; margin:40px auto; animation:r .8s linear infinite; }
+  @keyframes r { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<main id="app"><div class="spin"></div></main>
+
+<script>
+  window.API_URL = "https://script.google.com/macros/s/PLACEHOLDER/exec";
+  const BOOT = { className: new URLSearchParams(location.search).get('class') || '', classes: [] };
+  const app = document.getElementById('app');
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const header = () => `<div class="cls">${esc(BOOT.className || 'Check in')}</div>`;
+
+  // The phone remembers who it belongs to. If the browser ever forgets, the student just verifies again.
+  const STORE_KEY = 'qr-checkin-phones';
+  const store = window.CHECKIN_STORE || {
+    get() { try { return JSON.parse(localStorage.getItem(STORE_KEY) || '{}'); } catch (e) { return {}; } },
+    set(v) { try { localStorage.setItem(STORE_KEY, JSON.stringify(v)); } catch (e) {} },
+  };
+  const myToken = () => store.get()[BOOT.className] || '';
+  const saveToken = t => { const all = store.get(); all[BOOT.className] = t; store.set(all); };
+  const forgetToken = () => { const all = store.get(); delete all[BOOT.className]; store.set(all); };
+
+  // Inside Apps Script: google.script.run. On the GitHub Pages copy: a plain POST to the web app (window.API_URL).
+  const call = (fn, ...args) => window.API_URL
+    ? fetch(window.API_URL, { method: 'POST', body: JSON.stringify({ fn: fn, args: args }) })
+        .catch(() => { throw new Error('No connection. Check your Wi-Fi and scan again.'); })
+        .then(r => r.json())
+        .then(r => { if (!r.ok) throw new Error(r.error); return r.value; })
+    : new Promise((ok, fail) =>
+        google.script.run.withSuccessHandler(ok).withFailureHandler(e => fail(new Error(e && e.message || e)))[fn](...args));
+
+  const loading = () => { app.innerHTML = '<div class="spin"></div>'; };
+
+  function done(r, firstTime) {
+    if (r.closed) return problem('Phone linked', 'Check-in for today has closed, so talk to your teacher. Next class, just scan.');
+    const late = r.status === 'Late';
+    app.innerHTML = `${header()}
+      <div class="card big">
+        <div class="tick ${late ? 'late' : ''}">✓</div>
+        <h1>${r.duplicate ? 'Already checked in' : late ? 'Checked in — late' : "You're in"}</h1>
+        <div>${esc(r.name)}</div>
+        <div class="muted">${esc(r.status)} · ${esc(r.time)}</div>
+        ${firstTime ? '<div class="note">This phone is now linked to you. Next time, just scan.</div>' : ''}
+      </div>`;
+  }
+
+  function problem(title, text) {
+    app.innerHTML = `${header()}
+      <div class="card big"><div class="tick bad">!</div><h1>${esc(title)}</h1><div class="muted">${text}</div></div>`;
+  }
+
+  async function pickClass(classes) {
+    if (!classes.length) {
+      loading();
+      try { classes = await call('getClasses'); } catch (e) { return problem('Something went wrong', esc(e.message)); }
+    }
+    app.innerHTML = `<h1>Which class?</h1><div class="names">${
+      classes.map(c => `<button data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>`;
+    app.querySelectorAll('button').forEach(b => b.onclick = () => { BOOT.className = b.dataset.c; start(); });
+  }
+
+  function pickName(names) {
+    app.innerHTML = `${header()}
+      <h1>Who are you?</h1>
+      <p class="muted">First time on this phone — tap your name. You only do this once.</p>
+      <input type="search" id="q" placeholder="Search…" autocomplete="off">
+      <div class="names" id="list"></div>`;
+    const list = document.getElementById('list');
+    const draw = q => {
+      const shown = names.filter(n => n.toLowerCase().includes(q.toLowerCase()));
+      list.innerHTML = shown.map(n => `<button data-n="${esc(n)}">${esc(n)}</button>`).join('') || '<div class="muted">No matches.</div>';
+      list.querySelectorAll('button').forEach(b => b.onclick = () => startLink(b.dataset.n, names));
+    };
+    document.getElementById('q').oninput = e => draw(e.target.value);
+    draw('');
+  }
+
+  async function startLink(name, names) {
+    loading();
+    let r;
+    try { r = await call('startLink', BOOT.className, name); }
+    catch (e) { return problem("Couldn't continue", esc(e.message)); }
+    if (r.mode === 'teacher') return waitForTeacher(name, r.requestId);
+    enterCode(name, r.to, names);
+  }
+
+  function enterCode(name, to, names) {
+    app.innerHTML = `${header()}
+      <div class="card">
+        <h1>Hi ${esc(name)}</h1>
+        <p class="muted">We emailed a 6-digit code to <b>${esc(to)}</b>. Type it here to link this phone.</p>
+        <input class="code" id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••">
+        <div class="err" id="err"></div>
+        <button class="btn primary" id="go">Link my phone</button>
+        <button class="btn ghost" id="resend">Send a new code</button>
+        <button class="btn ghost" id="back">That's not me</button>
+      </div>`;
+    const input = document.getElementById('code'), err = document.getElementById('err');
+    const go = async () => {
+      if (input.value.replace(/\D/g, '').length < 6) { err.textContent = 'The code has 6 digits.'; return; }
+      document.getElementById('go').disabled = true;
+      err.textContent = '';
+      try {
+        const r = await call('finishLink', BOOT.className, name, input.value);
+        saveToken(r.token);
+        done(r.result, true);
+      } catch (e) {
+        err.textContent = e.message;
+        document.getElementById('go').disabled = false;
+        input.select();
+      }
+    };
+    input.oninput = () => { if (input.value.replace(/\D/g, '').length === 6) go(); };
+    document.getElementById('go').onclick = go;
+    document.getElementById('resend').onclick = () => startLink(name, names);
+    document.getElementById('back').onclick = () => pickName(names);
+    input.focus();
+  }
+
+  function waitForTeacher(name, requestId) {
+    app.innerHTML = `${header()}
+      <div class="card big">
+        <div class="tick wait">…</div>
+        <h1>Ask your teacher</h1>
+        <div class="muted">Your teacher will see <b>${esc(name)}</b> on the board and tap Approve. Keep this page open.</div>
+      </div>`;
+    const poll = async () => {
+      let r;
+      try { r = await call('checkApproval', BOOT.className, requestId); } catch (e) { return setTimeout(poll, 4000); }
+      if (r.waiting) return setTimeout(poll, 2500);
+      if (r.denied) return problem('Not approved', 'Your teacher didn\'t approve this phone. Scan again to retry.');
+      saveToken(r.token);
+      done(r.result, true);
+    };
+    setTimeout(poll, 2500);
+  }
+
+  async function start() {
+    if (!BOOT.className) return pickClass(BOOT.classes);
+    loading();
+    let s;
+    try { s = await call('getStudentState', BOOT.className, myToken()); }
+    catch (e) { return problem('Something went wrong', esc(e.message)); }
+
+    if (s.error === 'NO_CLASS') return problem('Unknown class', 'This QR code points to a class that isn\'t set up. Tell your teacher.');
+    if (!s.me) {
+      if (myToken()) forgetToken();             // unlinked by the teacher, or linked on a newer phone
+      if (s.closed) return problem('Check-in closed', 'Check-in for this class has closed. Talk to your teacher.');
+      return pickName(s.names);
+    }
+    if (s.alreadyIn) return done({ name: s.me, status: s.alreadyIn.status, time: s.alreadyIn.time, duplicate: true });
+    if (s.closed) return problem('Check-in closed', 'Check-in for this class has closed. Talk to your teacher.');
+    try { done(await call('checkIn', BOOT.className, myToken())); }
+    catch (e) { problem("Couldn't check in", esc(e.message)); }
+  }
+
+  start();
+</script>
+</body>
+</html>
